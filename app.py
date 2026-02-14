@@ -1,46 +1,38 @@
-"""
-FB Grappr Pro — License Server
-يشتغل على Railway مجاناً
-"""
-
 import os
 import json
 import sqlite3
-import hashlib
+import random
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
 
-# ── مفتاح سري — غيّره لأي كلام تختاره ──────────────────────────────────────
-API_SECRET = os.environ.get("API_SECRET", "fbgrappr_secret_2024")
-DB_PATH    = os.environ.get("DB_PATH", "license.db")
-
+# ── CONFIGURATION ──
+API_SECRET = os.environ.get("API_SECRET", "fbgrappr_2026")
+DB_PATH    = "license.db"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DATABASE
+# DATABASE SYSTEM
 # ═══════════════════════════════════════════════════════════════════════════════
-
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-
 def init_db():
     with get_db() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS licenses (
-                serial          TEXT PRIMARY KEY,
+                serial           TEXT PRIMARY KEY,
                 hw_ids          TEXT DEFAULT '[]',
-                activations     INTEGER DEFAULT 0,
+                activations      INTEGER DEFAULT 0,
                 max_activations INTEGER DEFAULT 2,
-                expiry_date     TEXT,
-                status          TEXT DEFAULT 'active',
-                plan            TEXT DEFAULT 'basic',
-                customer_name   TEXT,
-                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                expiry_date      TEXT,
+                status           TEXT DEFAULT 'active',
+                plan             TEXT DEFAULT 'basic',
+                customer_name    TEXT,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS activity_log (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,236 +46,216 @@ def init_db():
         """)
         conn.commit()
 
-
 init_db()
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# AUTH MIDDLEWARE
+# SECURITY MIDDLEWARE
 # ═══════════════════════════════════════════════════════════════════════════════
-
 def require_secret(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        secret = request.headers.get("X-API-Secret") or request.json.get("secret", "") if request.json else ""
+        secret = request.headers.get("X-API-Secret")
+        if not secret and request.is_json:
+            secret = request.json.get("secret")
         if secret != API_SECRET:
-            return jsonify({"ok": False, "msg": "غير مصرح"}), 403
+            return jsonify({"ok": False, "msg": "Unauthorized"}), 403
         return f(*args, **kwargs)
     return decorated
 
-
-def log_activity(serial, hw_id, action, result):
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO activity_log (serial,hw_id,action,ip,result) VALUES (?,?,?,?,?)",
-                (serial, hw_id, action, request.remote_addr, result)
-            )
-            conn.commit()
-    except Exception:
-        pass
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# ENDPOINTS — العميل بيستخدمهم
+# ADMIN API ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route("/api/validate", methods=["POST"])
-def validate():
-    """التحقق من Serial + تسجيل الجهاز"""
-    data    = request.json or {}
-    serial  = data.get("serial", "").strip().upper()
-    hw_id   = data.get("hw_id", "").strip()
-    secret  = data.get("secret", "")
-
-    if secret != API_SECRET:
-        return jsonify({"ok": False, "msg": "غير مصرح"}), 403
-
-    if not serial or not hw_id:
-        return jsonify({"ok": False, "msg": "بيانات ناقصة"})
-
+@app.route("/admin/stats")
+@require_secret
+def get_stats():
     with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM licenses WHERE serial=?", (serial,)
-        ).fetchone()
+        total = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+        active = conn.execute("SELECT COUNT(*) FROM licenses WHERE status='active'").fetchone()[0]
+        revoked = conn.execute("SELECT COUNT(*) FROM licenses WHERE status='revoked'").fetchone()[0]
+        devices = conn.execute("SELECT SUM(activations) FROM licenses").fetchone()[0] or 0
+        today = conn.execute("SELECT COUNT(*) FROM activity_log WHERE date(created_at)=date('now')").fetchone()[0]
+    return jsonify({
+        "ok": True, "total": total, "active": active, "revoked": revoked, "devices": devices, "today": today
+    })
 
-        if not row:
-            log_activity(serial, hw_id, "validate", "not_found")
-            return jsonify({"ok": False, "msg": "الـ Serial غير موجود!"})
-
-        if row["status"] != "active":
-            log_activity(serial, hw_id, "validate", "revoked")
-            return jsonify({"ok": False, "msg": "تم إيقاف هذا الـ Serial!"})
-
-        # التحقق من الصلاحية
-        if row["expiry_date"]:
-            try:
-                if datetime.now() > datetime.fromisoformat(row["expiry_date"]):
-                    log_activity(serial, hw_id, "validate", "expired")
-                    return jsonify({"ok": False, "msg": "انتهت صلاحية الاشتراك!"})
-            except ValueError:
-                pass
-
-        hw_ids = json.loads(row["hw_ids"] or "[]")
-
-        # الجهاز مسجّل مسبقاً
-        if hw_id in hw_ids:
-            log_activity(serial, hw_id, "validate", "ok_existing")
-            return jsonify({
-                "ok":      True,
-                "msg":     "مفعّل ✓",
-                "plan":    row["plan"],
-                "expiry":  row["expiry_date"] or "غير محدد",
-                "name":    row["customer_name"] or ""
-            })
-
-        # جهاز جديد — تحقق من الحد
-        if row["activations"] >= row["max_activations"]:
-            log_activity(serial, hw_id, "validate", "max_reached")
-            return jsonify({
-                "ok":  False,
-                "msg": f"تم استخدام الـ Serial على {row['max_activations']} أجهزة بالفعل!"
-            })
-
-        # سجّل الجهاز الجديد
-        hw_ids.append(hw_id)
-        conn.execute(
-            "UPDATE licenses SET hw_ids=?, activations=activations+1 WHERE serial=?",
-            (json.dumps(hw_ids), serial)
-        )
-        conn.commit()
-
-        log_activity(serial, hw_id, "validate", "ok_new_device")
-        return jsonify({
-            "ok":     True,
-            "msg":    f"تم التفعيل! ({row['activations']+1}/{row['max_activations']})",
-            "plan":   row["plan"],
-            "expiry": row["expiry_date"] or "غير محدد",
-            "name":   row["customer_name"] or ""
-        })
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ENDPOINTS — الأدمن بس
-# ═══════════════════════════════════════════════════════════════════════════════
+@app.route("/admin/list")
+@require_secret
+def list_serials():
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()
+    return jsonify({"ok": True, "serials": [dict(r) for r in rows]})
 
 @app.route("/admin/create", methods=["POST"])
 @require_secret
-def create_serial():
-    """إنشاء Serial جديد"""
-    import random
+def create():
+    data = request.json
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     serial = ''.join(random.choices(chars, k=5)) + '-' + ''.join(random.choices(chars, k=4))
-
-    data          = request.json or {}
-    max_act       = int(data.get("max_activations", 2))
-    expiry_days   = int(data.get("expiry_days", 0))
-    plan          = data.get("plan", "basic")
-    customer_name = data.get("customer_name", "")
-
-    expiry = None
-    if expiry_days > 0:
-        expiry = (datetime.now() + timedelta(days=expiry_days)).isoformat()
-
+    expiry_days = int(data.get("expiry_days", 0))
+    expiry = (datetime.now() + timedelta(days=expiry_days)).isoformat() if expiry_days > 0 else None
+    
     with get_db() as conn:
-        conn.execute(
-            "INSERT INTO licenses (serial,max_activations,expiry_date,plan,customer_name) VALUES (?,?,?,?,?)",
-            (serial, max_act, expiry, plan, customer_name)
-        )
+        conn.execute("INSERT INTO licenses (serial, max_activations, expiry_date, plan, customer_name) VALUES (?,?,?,?,?)",
+                    (serial, data.get("max_activations", 2), expiry, data.get("plan", "basic"), data.get("customer_name", "")))
         conn.commit()
+    return jsonify({"ok": True, "serial": serial, "expiry": expiry or "♾️"})
 
-    return jsonify({
-        "ok":     True,
-        "serial": serial,
-        "plan":   plan,
-        "expiry": expiry or "غير محدد",
-        "max":    max_act
-    })
-
-
-@app.route("/admin/list", methods=["GET"])
-@require_secret
-def list_serials():
-    """قائمة كل الـ Serials"""
+@app.route("/api/validate", methods=["POST"])
+def validate():
+    data = request.json or {}
+    serial = data.get("serial", "").strip().upper()
+    hw_id = data.get("hw_id", "").strip()
+    if data.get("secret") != API_SECRET: return jsonify({"ok": False, "msg": "API Key Error"}), 403
+    
     with get_db() as conn:
-        rows = conn.execute(
-            "SELECT serial,activations,max_activations,expiry_date,status,plan,customer_name,created_at FROM licenses ORDER BY created_at DESC"
-        ).fetchall()
-    return jsonify({"ok": True, "serials": [dict(r) for r in rows]})
+        row = conn.execute("SELECT * FROM licenses WHERE serial=?", (serial,)).fetchone()
+        if not row: return jsonify({"ok": False, "msg": "Invalid Serial"})
+        if row["status"] != "active": return jsonify({"ok": False, "msg": "Serial Revoked"})
+        
+        hw_ids = json.loads(row["hw_ids"])
+        if hw_id not in hw_ids:
+            if row["activations"] >= row["max_activations"]:
+                return jsonify({"ok": False, "msg": "Device Limit Reached"})
+            hw_ids.append(hw_id)
+            conn.execute("UPDATE licenses SET hw_ids=?, activations=activations+1 WHERE serial=?", (json.dumps(hw_ids), serial))
+            conn.commit()
+            
+    return jsonify({"ok": True, "msg": "Verified", "plan": row["plan"]})
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# THE GORGEOUS DASHBOARD HTML
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.route("/admin")
+def dashboard():
+    return render_template_string("""
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FB Grappr Pro — لوحة التحكم</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080b10; --bg2: #0d1117; --bg3: #161b22; --bg4: #21262d;
+  --border: #30363d; --text: #e6edf3; --muted: #8b949e;
+  --blue: #388bfd; --blue2: #1f6feb; --green: #3fb950; --red: #f85149;
+}
+body { font-family: 'Tajawal', sans-serif; background: var(--bg); color: var(--text); margin:0; }
+#login-screen { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+.login-card { width: 400px; background: var(--bg3); border: 1px solid var(--border); border-radius: 20px; padding: 40px; text-align: center; }
+input { width: 100%; padding: 12px; margin: 10px 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; color: white; box-sizing: border-box; }
+.login-btn { width: 100%; padding: 14px; background: var(--blue2); border: none; border-radius: 10px; color: white; cursor: pointer; font-weight: 700; }
+#app { display: none; padding-right: 260px; }
+.sidebar { position: fixed; right: 0; top: 0; bottom: 0; width: 260px; background: var(--bg3); border-left: 1px solid var(--border); padding: 20px; }
+.nav-item { padding: 12px; cursor: pointer; border-radius: 8px; margin-bottom: 5px; color: var(--muted); transition: 0.3s; }
+.nav-item:hover, .nav-item.active { background: var(--bg4); color: white; }
+.main-content { padding: 40px; }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+.stat-card { background: var(--bg3); padding: 20px; border-radius: 15px; border: 1px solid var(--border); }
+.stat-value { font-size: 28px; font-weight: 900; color: var(--blue); }
+table { width: 100%; border-collapse: collapse; background: var(--bg3); border-radius: 10px; overflow: hidden; }
+th, td { padding: 15px; text-align: right; border-bottom: 1px solid var(--border); }
+.badge { padding: 4px 8px; border-radius: 5px; font-size: 12px; }
+.badge-active { background: rgba(63, 185, 80, 0.2); color: var(--green); }
+</style>
+</head>
+<body>
 
-@app.route("/admin/revoke", methods=["POST"])
-@require_secret
-def revoke_serial():
-    """إيقاف Serial"""
-    serial = (request.json or {}).get("serial", "").strip().upper()
-    if not serial:
-        return jsonify({"ok": False, "msg": "أدخل الـ Serial"})
-    with get_db() as conn:
-        cur = conn.execute("UPDATE licenses SET status='revoked' WHERE serial=?", (serial,))
-        conn.commit()
-    return jsonify({"ok": cur.rowcount > 0, "msg": "تم الإيقاف" if cur.rowcount else "Serial غير موجود"})
+<div id="login-screen">
+  <div class="login-card">
+    <h2>⚡ FB Grappr Pro</h2>
+    <input type="text" id="server-url" placeholder="رابط السيرفر" value="">
+    <input type="password" id="api-secret" placeholder="المفتاح السري">
+    <button class="login-btn" onclick="doLogin()">🚀 دخول</button>
+  </div>
+</div>
 
+<div id="app">
+  <aside class="sidebar">
+    <h3>لوحة التحكم</h3>
+    <div class="nav-item active" onclick="showPage('dashboard')">📊 الرئيسية</div>
+    <div class="nav-item" onclick="showPage('create')">✨ إنشاء سيريال</div>
+    <div class="nav-item" onclick="doLogout()">🚪 خروج</div>
+  </aside>
 
-@app.route("/admin/reactivate", methods=["POST"])
-@require_secret
-def reactivate_serial():
-    """إعادة تفعيل Serial"""
-    serial = (request.json or {}).get("serial", "").strip().upper()
-    with get_db() as conn:
-        cur = conn.execute("UPDATE licenses SET status='active' WHERE serial=?", (serial,))
-        conn.commit()
-    return jsonify({"ok": cur.rowcount > 0, "msg": "تمت إعادة التفعيل"})
+  <main class="main-content">
+    <div id="page-dashboard" class="page active">
+      <div class="stats-grid">
+        <div class="stat-card"><div>إجمالي السيريالات</div><div class="stat-value" id="stat-total">0</div></div>
+        <div class="stat-card"><div>نشط</div><div class="stat-value" id="stat-active">0</div></div>
+        <div class="stat-card"><div>أجهزة</div><div class="stat-value" id="stat-devices">0</div></div>
+      </div>
+      <table>
+        <thead><tr><th>العميل</th><th>السيريال</th><th>الجهاز</th><th>الحالة</th></tr></thead>
+        <tbody id="serials-table"></tbody>
+      </table>
+    </div>
 
+    <div id="page-create" class="page" style="display:none">
+       <div class="login-card" style="text-align:right; width:100%">
+          <h3>إنشاء سيريال جديد</h3>
+          <label>اسم العميل</label><input type="text" id="new-name">
+          <label>عدد الأيام (0 للابد)</label><input type="number" id="new-days" value="30">
+          <button class="login-btn" onclick="createNewSerial()">إنشاء الآن</button>
+          <h4 id="result-serial" style="color:var(--green); margin-top:20px"></h4>
+       </div>
+    </div>
+  </main>
+</div>
 
-@app.route("/admin/reset_devices", methods=["POST"])
-@require_secret
-def reset_devices():
-    """مسح الأجهزة المسجّلة على Serial معين"""
-    serial = (request.json or {}).get("serial", "").strip().upper()
-    with get_db() as conn:
-        conn.execute("UPDATE licenses SET hw_ids='[]', activations=0 WHERE serial=?", (serial,))
-        conn.commit()
-    return jsonify({"ok": True, "msg": "تم مسح الأجهزة"})
+<script>
+let CONFIG = { url: '', secret: '' };
 
+function doLogin() {
+    CONFIG.url = document.getElementById('https://fbgrapper-production.up.railway.app').value.replace(/\/$/, "");
+    CONFIG.secret = document.getElementById('api-secret').value;
+    refreshData();
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+}
 
-@app.route("/admin/log", methods=["GET"])
-@require_secret
-def get_log():
-    """سجل النشاط"""
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM activity_log ORDER BY created_at DESC LIMIT 200"
-        ).fetchall()
-    return jsonify({"ok": True, "log": [dict(r) for r in rows]})
+async function refreshData() {
+    const sRes = await fetch(`${CONFIG.url}/admin/stats`, { headers: {'X-API-Secret': CONFIG.secret}});
+    const stats = await sRes.json();
+    document.getElementById('stat-total').innerText = stats.total;
+    document.getElementById('stat-active').innerText = stats.active;
+    document.getElementById('stat-devices').innerText = stats.devices;
 
+    const lRes = await fetch(`${CONFIG.url}/admin/list`, { headers: {'X-API-Secret': CONFIG.secret}});
+    const list = await lRes.json();
+    let rows = '';
+    list.serials.forEach(s => {
+        rows += `<tr><td>${s.customer_name}</td><td style="font-family:monospace">${s.serial}</td><td>${s.activations}/${s.max_activations}</td><td><span class="badge badge-active">${s.status}</span></td></tr>`;
+    });
+    document.getElementById('serials-table').innerHTML = rows;
+}
 
-@app.route("/admin/stats", methods=["GET"])
-@require_secret
-def get_stats():
-    """إحصائيات سريعة"""
-    with get_db() as conn:
-        total    = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
-        active   = conn.execute("SELECT COUNT(*) FROM licenses WHERE status='active'").fetchone()[0]
-        revoked  = conn.execute("SELECT COUNT(*) FROM licenses WHERE status='revoked'").fetchone()[0]
-        devices  = conn.execute("SELECT SUM(activations) FROM licenses").fetchone()[0] or 0
-        today    = conn.execute(
-            "SELECT COUNT(*) FROM activity_log WHERE date(created_at)=date('now')"
-        ).fetchone()[0]
-    return jsonify({
-        "ok": True,
-        "total_serials":  total,
-        "active_serials": active,
-        "revoked":        revoked,
-        "total_devices":  devices,
-        "requests_today": today
-    })
+async function createNewSerial() {
+    const data = {
+        customer_name: document.getElementById('new-name').value,
+        expiry_days: document.getElementById('new-days').value,
+        plan: 'pro'
+    };
+    const res = await fetch(`${CONFIG.url}/admin/create`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-API-Secret': CONFIG.secret},
+        body: JSON.stringify(data)
+    });
+    const result = await res.json();
+    document.getElementById('result-serial').innerText = "تم الإنشاء: " + result.serial;
+    refreshData();
+}
 
-
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "app": "FB Grappr Pro License Server", "version": "2.0"})
-
+function showPage(p) {
+    document.querySelectorAll('.page').forEach(el => el.style.display = 'none');
+    document.getElementById('page-' + p).style.display = 'block';
+}
+</script>
+</body>
+</html>
+    """)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
