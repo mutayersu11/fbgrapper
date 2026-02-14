@@ -224,7 +224,7 @@ th { background: var(--bg4); color: var(--muted); font-size: 13px; }
 <script>
 // الرابط الخاص بك مدمج هنا مباشرة
 const SERVER_URL = 'https://fbgrapper-production.up.railway.app';
-let API_KEY = '';
+let API_KEY = 'fbgrappr_2026';
 
 async function doLogin() {
     API_KEY = document.getElementById('api-secret').value;
