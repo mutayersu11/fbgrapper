@@ -14,7 +14,7 @@ from flask import Flask, request, jsonify
 app = Flask(__name__)
 
 # ── مفتاح سري — غيّره لأي كلام تختاره ──────────────────────────────────────
-API_SECRET = os.environ.get("API_SECRET", "MohDev")
+API_SECRET = os.environ.get("API_SECRET", "fbgrappr_secret_2024")
 DB_PATH    = os.environ.get("DB_PATH", "license.db")
 
 
