@@ -45,7 +45,7 @@ APP_DB      = "fb_pro.db"
 
 # ← غيّر الرابط ده برابط السيرفر بتاعك على Railway
 SERVER_URL  = "https://fbgrapper-production.up.railway.app/"
-API_SECRET  = "fbgrappr_secret_2024"
+API_SECRET  = "fbgrappr_secret_2026"
 SCREEN_RECORDERS = {'obs64.exe','obs32.exe','xsplit.exe','bandicam.exe','sharex.exe','camtasia.exe'}
 EG_PHONE_REGEX   = r'(?:\+?20|0)?1[0-2,5][0-9]{8}'
 
