@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify, render_template_string
 app = Flask(__name__)
 
 # ── CONFIGURATION ──
+# سيتم استلام المفتاح السري من إعدادات Railway، أو استخدام القيمة الافتراضية
 API_SECRET = os.environ.get("API_SECRET", "fbgrappr_2026")
 DB_PATH    = "license.db"
 
@@ -97,7 +98,7 @@ def create():
     
     with get_db() as conn:
         conn.execute("INSERT INTO licenses (serial, max_activations, expiry_date, plan, customer_name) VALUES (?,?,?,?,?)",
-                    (serial, data.get("max_activations", 2), expiry, data.get("plan", "basic"), data.get("customer_name", "")))
+                    (serial, data.get("max_activations", 2), expiry, data.get("plan", "pro"), data.get("customer_name", "")))
         conn.commit()
     return jsonify({"ok": True, "serial": serial, "expiry": expiry or "♾️"})
 
@@ -124,7 +125,7 @@ def validate():
     return jsonify({"ok": True, "msg": "Verified", "plan": row["plan"]})
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# THE GORGEOUS DASHBOARD HTML
+# DASHBOARD HTML (INTEGRATED WITH YOUR URL)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route("/admin")
 def dashboard():
@@ -135,7 +136,7 @@ def dashboard():
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FB Grappr Pro — لوحة التحكم</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Tajawal:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;700;900&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg: #080b10; --bg2: #0d1117; --bg3: #161b22; --bg4: #21262d;
@@ -146,18 +147,20 @@ body { font-family: 'Tajawal', sans-serif; background: var(--bg); color: var(--t
 #login-screen { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: var(--bg); }
 .login-card { width: 400px; background: var(--bg3); border: 1px solid var(--border); border-radius: 20px; padding: 40px; text-align: center; }
 input { width: 100%; padding: 12px; margin: 10px 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; color: white; box-sizing: border-box; }
-.login-btn { width: 100%; padding: 14px; background: var(--blue2); border: none; border-radius: 10px; color: white; cursor: pointer; font-weight: 700; }
+.login-btn { width: 100%; padding: 14px; background: var(--blue2); border: none; border-radius: 10px; color: white; cursor: pointer; font-weight: 700; transition: 0.3s; }
+.login-btn:hover { background: var(--blue); }
 #app { display: none; padding-right: 260px; }
 .sidebar { position: fixed; right: 0; top: 0; bottom: 0; width: 260px; background: var(--bg3); border-left: 1px solid var(--border); padding: 20px; }
 .nav-item { padding: 12px; cursor: pointer; border-radius: 8px; margin-bottom: 5px; color: var(--muted); transition: 0.3s; }
 .nav-item:hover, .nav-item.active { background: var(--bg4); color: white; }
 .main-content { padding: 40px; }
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-.stat-card { background: var(--bg3); padding: 20px; border-radius: 15px; border: 1px solid var(--border); }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px; margin-bottom: 30px; }
+.stat-card { background: var(--bg3); padding: 20px; border-radius: 15px; border: 1px solid var(--border); text-align: center; }
 .stat-value { font-size: 28px; font-weight: 900; color: var(--blue); }
-table { width: 100%; border-collapse: collapse; background: var(--bg3); border-radius: 10px; overflow: hidden; }
+table { width: 100%; border-collapse: collapse; background: var(--bg3); border-radius: 10px; overflow: hidden; margin-top: 20px; }
 th, td { padding: 15px; text-align: right; border-bottom: 1px solid var(--border); }
-.badge { padding: 4px 8px; border-radius: 5px; font-size: 12px; }
+th { background: var(--bg4); color: var(--muted); font-size: 13px; }
+.badge { padding: 4px 8px; border-radius: 5px; font-size: 12px; font-weight: bold; }
 .badge-active { background: rgba(63, 185, 80, 0.2); color: var(--green); }
 </style>
 </head>
@@ -165,19 +168,22 @@ th, td { padding: 15px; text-align: right; border-bottom: 1px solid var(--border
 
 <div id="login-screen">
   <div class="login-card">
-    <h2>⚡ FB Grappr Pro</h2>
-    <input type="text" id="server-url" placeholder="رابط السيرفر" value="">
-    <input type="password" id="api-secret" placeholder="المفتاح السري">
-    <button class="login-btn" onclick="doLogin()">🚀 دخول</button>
+    <div style="font-size: 50px; margin-bottom: 10px;">⚡</div>
+    <h2>FB Grappr Pro</h2>
+    <p style="color: var(--muted); font-size: 12px; margin-bottom: 20px;">نظام إدارة التراخيص - 2026</p>
+    <input type="password" id="api-secret" placeholder="ادخل المفتاح السري" autofocus>
+    <button class="login-btn" onclick="doLogin()">🚀 دخول للنظام</button>
+    <div id="err" style="color:var(--red); font-size:12px; margin-top:10px; display:none">❌ المفتاح السري غير صحيح</div>
   </div>
 </div>
 
 <div id="app">
   <aside class="sidebar">
-    <h3>لوحة التحكم</h3>
+    <h3 style="color: var(--blue);">⚡ FB Grappr</h3>
+    <hr style="border: 0; border-top: 1px solid var(--border); margin: 20px 0;">
     <div class="nav-item active" onclick="showPage('dashboard')">📊 الرئيسية</div>
     <div class="nav-item" onclick="showPage('create')">✨ إنشاء سيريال</div>
-    <div class="nav-item" onclick="doLogout()">🚪 خروج</div>
+    <div class="nav-item" onclick="location.reload()" style="color: var(--red);">🚪 خروج</div>
   </aside>
 
   <main class="main-content">
@@ -185,72 +191,102 @@ th, td { padding: 15px; text-align: right; border-bottom: 1px solid var(--border
       <div class="stats-grid">
         <div class="stat-card"><div>إجمالي السيريالات</div><div class="stat-value" id="stat-total">0</div></div>
         <div class="stat-card"><div>نشط</div><div class="stat-value" id="stat-active">0</div></div>
-        <div class="stat-card"><div>أجهزة</div><div class="stat-value" id="stat-devices">0</div></div>
+        <div class="stat-card"><div>أجهزة مفعلة</div><div class="stat-value" id="stat-devices">0</div></div>
+        <div class="stat-card"><div>طلبات اليوم</div><div class="stat-value" id="stat-today">0</div></div>
       </div>
-      <table>
-        <thead><tr><th>العميل</th><th>السيريال</th><th>الجهاز</th><th>الحالة</th></tr></thead>
-        <tbody id="serials-table"></tbody>
-      </table>
+      
+      <div style="background: var(--bg3); padding: 20px; border-radius: 15px; border: 1px solid var(--border);">
+        <h3 style="margin-top: 0;">🔑 قائمة التراخيص</h3>
+        <table>
+          <thead><tr><th>العميل</th><th>السيريال</th><th>الأجهزة</th><th>الحالة</th></tr></thead>
+          <tbody id="serials-table"></tbody>
+        </table>
+      </div>
     </div>
 
     <div id="page-create" class="page" style="display:none">
-       <div class="login-card" style="text-align:right; width:100%">
-          <h3>إنشاء سيريال جديد</h3>
-          <label>اسم العميل</label><input type="text" id="new-name">
-          <label>عدد الأيام (0 للابد)</label><input type="number" id="new-days" value="30">
-          <button class="login-btn" onclick="createNewSerial()">إنشاء الآن</button>
-          <h4 id="result-serial" style="color:var(--green); margin-top:20px"></h4>
+       <div class="login-card" style="text-align:right; width:100%; max-width: 500px; margin: auto;">
+          <h3>✨ توليد ترخيص جديد</h3>
+          <label style="font-size: 13px; color: var(--muted);">👤 اسم العميل</label>
+          <input type="text" id="new-name" placeholder="مثال: أحمد محمد">
+          <label style="font-size: 13px; color: var(--muted);">📅 عدد أيام الصلاحية (0 للابد)</label>
+          <input type="number" id="new-days" value="30">
+          <button class="login-btn" onclick="createNewSerial()">🛠️ إنشاء السيريال</button>
+          <div id="res-box" style="display:none; margin-top:20px; padding:15px; background:var(--bg4); border-radius:10px; text-align:center">
+             <div style="font-size: 12px; color: var(--green);">تم الإنشاء بنجاح:</div>
+             <h3 id="result-serial" style="color:var(--blue); letter-spacing: 2px;"></h3>
+          </div>
        </div>
     </div>
   </main>
 </div>
 
 <script>
-let CONFIG = { url: '', secret: '' };
+// الرابط الخاص بك مدمج هنا مباشرة
+const SERVER_URL = 'https://fbgrapper-production.up.railway.app';
+let API_KEY = '';
 
-function doLogin() {
-    CONFIG.url = document.getElementById('https://fbgrapper-production.up.railway.app').value.replace(/\/$/, "");
-    CONFIG.secret = document.getElementById('api-secret').value;
-    refreshData();
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
+async function doLogin() {
+    API_KEY = document.getElementById('api-secret').value;
+    try {
+        const res = await fetch(`${SERVER_URL}/admin/stats`, { headers: {'X-API-Secret': API_KEY}});
+        if(res.ok) {
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('app').style.display = 'block';
+            refreshData();
+        } else {
+            document.getElementById('err').style.display = 'block';
+        }
+    } catch(e) {
+        alert("خطأ في الاتصال بالسيرفر");
+    }
 }
 
 async function refreshData() {
-    const sRes = await fetch(`${CONFIG.url}/admin/stats`, { headers: {'X-API-Secret': CONFIG.secret}});
+    const sRes = await fetch(`${SERVER_URL}/admin/stats`, { headers: {'X-API-Secret': API_KEY}});
     const stats = await sRes.json();
     document.getElementById('stat-total').innerText = stats.total;
     document.getElementById('stat-active').innerText = stats.active;
     document.getElementById('stat-devices').innerText = stats.devices;
+    document.getElementById('stat-today').innerText = stats.today;
 
-    const lRes = await fetch(`${CONFIG.url}/admin/list`, { headers: {'X-API-Secret': CONFIG.secret}});
+    const lRes = await fetch(`${SERVER_URL}/admin/list`, { headers: {'X-API-Secret': API_KEY}});
     const list = await lRes.json();
     let rows = '';
     list.serials.forEach(s => {
-        rows += `<tr><td>${s.customer_name}</td><td style="font-family:monospace">${s.serial}</td><td>${s.activations}/${s.max_activations}</td><td><span class="badge badge-active">${s.status}</span></td></tr>`;
+        rows += `<tr>
+            <td>${s.customer_name || 'بدون اسم'}</td>
+            <td style="font-family:monospace; color:var(--blue)">${s.serial}</td>
+            <td>${s.activations}/${s.max_activations}</td>
+            <td><span class="badge badge-active">${s.status}</span></td>
+        </tr>`;
     });
-    document.getElementById('serials-table').innerHTML = rows;
+    document.getElementById('serials-table').innerHTML = rows || '<tr><td colspan="4" style="text-align:center">لا يوجد سيريالات حالياً</td></tr>';
 }
 
 async function createNewSerial() {
-    const data = {
-        customer_name: document.getElementById('new-name').value,
-        expiry_days: document.getElementById('new-days').value,
-        plan: 'pro'
-    };
-    const res = await fetch(`${CONFIG.url}/admin/create`, {
+    const name = document.getElementById('new-name').value;
+    const days = document.getElementById('new-days').value;
+    
+    const res = await fetch(`${SERVER_URL}/admin/create`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json', 'X-API-Secret': CONFIG.secret},
-        body: JSON.stringify(data)
+        headers: {'Content-Type': 'application/json', 'X-API-Secret': API_KEY},
+        body: JSON.stringify({ customer_name: name, expiry_days: days, plan: 'pro' })
     });
+    
     const result = await res.json();
-    document.getElementById('result-serial').innerText = "تم الإنشاء: " + result.serial;
-    refreshData();
+    if(result.ok) {
+        document.getElementById('res-box').style.display = 'block';
+        document.getElementById('result-serial').innerText = result.serial;
+        refreshData();
+    }
 }
 
 function showPage(p) {
     document.querySelectorAll('.page').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
     document.getElementById('page-' + p).style.display = 'block';
+    event.currentTarget.classList.add('active');
 }
 </script>
 </body>
@@ -258,5 +294,6 @@ function showPage(p) {
     """)
 
 if __name__ == "__main__":
+    # تشغيل السيرفر على البورت المخصص من Railway
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
